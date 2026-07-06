@@ -1,2 +1,6 @@
+# never commit run logs or mini-ork artifacts (may echo prompts/paths)
+*.log
+.mini-ork-build-*.log
+.mini-ork/
 .venv/
 __pycache__/
