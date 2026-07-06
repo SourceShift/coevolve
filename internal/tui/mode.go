@@ -25,6 +25,13 @@ type Mode interface {
 	View(w, h int) string
 }
 
+// InputCapturer is an optional interface. A mode with a focused text input
+// implements it so the root routes keystrokes to the mode (typing) instead of
+// treating digits as mode-switches. ctrl+c / ctrl+k always stay global.
+type InputCapturer interface {
+	CapturesInput() bool
+}
+
 // RefreshMsg is broadcast on a timer so modes reload real data from the seams.
 type RefreshMsg struct{}
 

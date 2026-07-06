@@ -93,6 +93,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paletteOpen {
 			return m.updatePalette(msg)
 		}
+		// If the active mode owns a focused input, keystrokes go to it (typing);
+		// only ctrl+c and ctrl+k stay global.
+		if m.active < len(ms) {
+			if ic, ok := ms[m.active].(InputCapturer); ok && ic.CapturesInput() {
+				switch msg.String() {
+				case "ctrl+c":
+					return m, tea.Quit
+				case "ctrl+k":
+					m.paletteOpen, m.paletteQuery, m.paletteIdx = true, "", 0
+					return m, nil
+				default:
+					return m, ms[m.active].Update(msg)
+				}
+			}
+		}
 		switch s := msg.String(); s {
 		case "q", "ctrl+c":
 			return m, tea.Quit
