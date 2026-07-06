@@ -14,10 +14,10 @@ import (
 )
 
 type costMode struct {
-	total, today       float64
-	totalOK, todayOK   bool
-	spend              []seams.ProviderSpend
-	spendOK            bool
+	total, today     float64
+	totalOK, todayOK bool
+	spend            []seams.ProviderSpend
+	spendOK          bool
 }
 
 func init() { tui.RegisterMode(&costMode{}) }
@@ -54,7 +54,7 @@ func (c *costMode) View(w, h int) string {
 		b.WriteString(tui.SubStyle.Render("   state DB not found (MINI_ORK_DB) — offline\n"))
 		return b.String()
 	}
-	b.WriteString(tui.SubStyle.Render(fmt.Sprintf("   %-16s %8s %12s %12s\n", "provider", "calls", "tokens", "cost")))
+	b.WriteString(tui.SubStyle.Render(fmt.Sprintf("   %-16s %8s %12s %12s", "provider", "calls", "tokens", "cost")) + "\n")
 	max := len(c.spend)
 	if max > h-10 {
 		max = h - 10

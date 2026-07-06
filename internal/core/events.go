@@ -9,12 +9,12 @@ type EventType string
 const (
 	EvRunStarted  EventType = "run_started"
 	EvNode        EventType = "node"       // a mini-ork node (classify/plan/execute/…)
-	EvStatus      EventType = "status"      // status change (running/escalated/done/failed)
-	EvUsage       EventType = "usage"       // cumulative cost/token tick
-	EvRecall      EventType = "recall"      // a ContextNest recall fed into the run
-	EvReroute     EventType = "reroute"     // router auto-rerouted (quota/parity)
-	EvPermission  EventType = "permission"  // worker asked to perform a gated action
-	EvLog         EventType = "log"         // a raw log line
+	EvStatus      EventType = "status"     // status change (running/escalated/done/failed)
+	EvUsage       EventType = "usage"      // cumulative cost/token tick
+	EvRecall      EventType = "recall"     // a ContextNest recall fed into the run
+	EvReroute     EventType = "reroute"    // router auto-rerouted (quota/parity)
+	EvPermission  EventType = "permission" // worker asked to perform a gated action
+	EvLog         EventType = "log"        // a raw log line
 	EvRunFinished EventType = "run_finished"
 )
 
@@ -33,11 +33,11 @@ type Event struct {
 	Type  EventType
 	RunID string
 	TS    time.Time
-	Seq   int              // monotonic per run (cursor / dedupe key)
-	Node  string           // classify | plan | execute | verify | reflect | …
+	Seq   int    // monotonic per run (cursor / dedupe key)
+	Node  string // classify | plan | execute | verify | reflect | …
 	Route Route
-	Lane  string           // resolved lane name
-	Model string           // resolved provider/model
+	Lane  string // resolved lane name
+	Model string // resolved provider/model
 	Text  string
 	Cost  Value            // per-node/cumulative cost (Real from llm_calls, or NotYet)
 	Data  map[string]Value // extra typed fields

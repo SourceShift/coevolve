@@ -60,12 +60,12 @@ type LaneReward struct {
 }
 
 type LaneStat struct {
-	Lane      string
-	Calls     int
-	SharePct  float64
-	P50MS     int
-	CostUSD   float64
-	RewardG   *float64 // nil when no graded traces yet
+	Lane     string
+	Calls    int
+	SharePct float64
+	P50MS    int
+	CostUSD  float64
+	RewardG  *float64 // nil when no graded traces yet
 }
 
 type RunRow struct {

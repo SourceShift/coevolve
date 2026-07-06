@@ -11,7 +11,7 @@ import (
 type ModeMeta struct {
 	Key   string // "Home", "Cost", …
 	Title string
-	Digit int    // 0-7
+	Digit int // 0-7
 }
 
 // Mode is one screen of the dashboard. Modes self-register (init → RegisterMode)
