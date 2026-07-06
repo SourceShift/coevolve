@@ -57,6 +57,11 @@ type Model struct {
 	statusLane    string
 	statusCost    string
 	statusCN      string
+	// overlays
+	paletteOpen  bool
+	paletteQuery string
+	paletteIdx   int
+	helpOpen     bool
 }
 
 func New() Model {
@@ -81,20 +86,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tickCmd())
 		return m, tea.Batch(cmds...)
 	case tea.KeyMsg:
+		if m.helpOpen { // any key closes the help overlay
+			m.helpOpen = false
+			return m, nil
+		}
+		if m.paletteOpen {
+			return m.updatePalette(msg)
+		}
 		switch s := msg.String(); s {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "ctrl+k", ":":
+			m.paletteOpen, m.paletteQuery, m.paletteIdx = true, "", 0
+			return m, nil
+		case "?":
+			m.helpOpen = true
+			return m, nil
 		case "0", "1", "2", "3", "4", "5", "6", "7":
 			if d := int(s[0] - '0'); d < len(ms) {
 				m.active = d
 			}
 			return m, nil
-		case "left", "h":
+		case "left":
 			if m.active > 0 {
 				m.active--
 			}
 			return m, nil
-		case "right", "l":
+		case "right":
 			if m.active < len(ms)-1 {
 				m.active++
 			}
@@ -121,11 +139,51 @@ func (m *Model) refreshStatus() {
 	}
 }
 
+func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cmds := filterCommands(m.paletteQuery)
+	switch msg.String() {
+	case "esc":
+		m.paletteOpen = false
+	case "up":
+		if m.paletteIdx > 0 {
+			m.paletteIdx--
+		}
+	case "down":
+		if m.paletteIdx < len(cmds)-1 {
+			m.paletteIdx++
+		}
+	case "enter":
+		if m.paletteIdx < len(cmds) {
+			if d := cmds[m.paletteIdx].JumpDigit; d >= 0 && d < len(Modes()) {
+				m.active = d
+			}
+		}
+		m.paletteOpen = false
+	case "backspace":
+		if n := len(m.paletteQuery); n > 0 {
+			m.paletteQuery = m.paletteQuery[:n-1]
+			m.paletteIdx = 0
+		}
+	default:
+		if s := msg.String(); len(s) == 1 {
+			m.paletteQuery += s
+			m.paletteIdx = 0
+		}
+	}
+	return m, nil
+}
+
 func (m Model) View() string {
 	if m.width == 0 {
 		return "starting Coevolve…"
 	}
-	return m.header() + "\n" + m.body() + "\n" + m.statusBar()
+	body := m.body()
+	if m.helpOpen {
+		body = renderHelp(m.width, max(1, m.height-8))
+	} else if m.paletteOpen {
+		body = renderPalette(m.paletteQuery, m.paletteIdx, m.width, max(1, m.height-8))
+	}
+	return m.header() + "\n" + body + "\n" + m.statusBar()
 }
 
 func (m Model) header() string {
