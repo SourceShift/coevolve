@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -83,8 +84,12 @@ func Start(cfg Config, input string) *Handle {
 			sc := bufio.NewScanner(r)
 			sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 			for sc.Scan() {
+				txt := stripANSI(sc.Text())
+				if strings.TrimSpace(txt) == "" {
+					continue
+				}
 				select {
-				case out <- Line{Text: sc.Text(), Err: isErr}:
+				case out <- Line{Text: txt, Err: isErr}:
 				case <-ctx.Done():
 					done <- struct{}{}
 					return
@@ -140,6 +145,10 @@ func build(ctx context.Context, cfg Config, input string) (*exec.Cmd, string) {
 	c.Dir = cfg.TargetCWD
 	return c, fmt.Sprintf("› %s  (main LLM: %s)", input, cfg.WorkerModel)
 }
+
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
 func writeKickoff(task string) string {
 	dir := filepath.Join(os.TempDir(), "coevolve-kickoffs")
