@@ -10,6 +10,7 @@ import (
 
 	"github.com/sourceshift/coevolve/internal/core"
 	"github.com/sourceshift/coevolve/internal/tui"
+	_ "github.com/sourceshift/coevolve/internal/tui/modes" // register the 8 modes
 )
 
 const version = "0.0.1"

@@ -1,5 +1,5 @@
 // Package tui is the Bubble Tea dashboard — the 8-mode Coevolve control plane.
-// Each mode is a screen; digit keys 0-7 switch. Data comes from mini-ork via the
+// Modes self-register; digit keys 0-7 switch. Data comes from mini-ork via the
 // seams (real data only, provenance-gated).
 package tui
 
@@ -9,106 +9,130 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/sourceshift/coevolve/internal/seams"
 )
 
-type modeDef struct {
-	key   string
-	title string
-}
-
-// The 8 modes from the design (Coevolve CLI.dc.html).
-var modes = []modeDef{
-	{"Home", "run / chat stream"},
-	{"Runs", "runs & epics · scheduler · spawn tree"},
-	{"Learning", "learning loop · usage + research"},
-	{"Router", "router & LLM perf"},
-	{"ContextNest", "capsule · basins · graph"},
-	{"Topology", "node DAG · lane→provider · health"},
-	{"Cost", "metrics · savings · budget"},
-	{"Logs", "live .live.log · artifacts"},
-}
-
-// Coevolve palette (from the design): teal=local/healthy, amber=frontier/cost,
-// violet=memory, graphite grounds.
+// Coevolve palette (from the design), exported so mode files share it.
 var (
-	teal   = lipgloss.Color("#2BC4A8")
-	amber  = lipgloss.Color("#E6A24A")
-	muted  = lipgloss.Color("#5A6475")
-	fg     = lipgloss.Color("#EAEEF4")
-	subtle = lipgloss.Color("#3E4654")
+	Teal   = lipgloss.Color("#2BC4A8")
+	Amber  = lipgloss.Color("#E6A24A")
+	Violet = lipgloss.Color("#8B7CD8")
+	Green  = lipgloss.Color("#3FBE86")
+	Red    = lipgloss.Color("#E0705F")
+	Muted  = lipgloss.Color("#5A6475")
+	FG     = lipgloss.Color("#EAEEF4")
+	Subtle = lipgloss.Color("#3E4654")
 
-	tabActive   = lipgloss.NewStyle().Foreground(lipgloss.Color("#07090D")).Background(teal).Bold(true).Padding(0, 1)
-	tabInactive = lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
-	titleStyle  = lipgloss.NewStyle().Foreground(fg).Bold(true)
-	subStyle    = lipgloss.NewStyle().Foreground(muted)
-	statusStyle = lipgloss.NewStyle().Foreground(muted).Background(lipgloss.Color("#0E1218")).Padding(0, 1)
-	dotTeal     = lipgloss.NewStyle().Foreground(teal).Render("●")
-	dotAmber    = lipgloss.NewStyle().Foreground(amber).Render("●")
+	TitleStyle = lipgloss.NewStyle().Foreground(FG).Bold(true)
+	SubStyle   = lipgloss.NewStyle().Foreground(Muted)
+	TealStyle  = lipgloss.NewStyle().Foreground(Teal)
+	AmberStyle = lipgloss.NewStyle().Foreground(Amber)
+	HeadStyle  = lipgloss.NewStyle().Foreground(Teal).Bold(true)
+
+	tabActive   = lipgloss.NewStyle().Foreground(lipgloss.Color("#07090D")).Background(Teal).Bold(true).Padding(0, 1)
+	tabInactive = lipgloss.NewStyle().Foreground(Muted).Padding(0, 1)
+	statusStyle = lipgloss.NewStyle().Foreground(Muted).Background(lipgloss.Color("#0E1218")).Padding(0, 1)
 )
+
+// Bar renders a horizontal bar of `frac` (0..1) at `width` cells in `color`.
+func Bar(frac float64, width int, color lipgloss.Color) string {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	fill := int(frac * float64(width))
+	on := lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("█", fill))
+	off := lipgloss.NewStyle().Foreground(Subtle).Render(strings.Repeat("░", width-fill))
+	return on + off
+}
 
 // Model is the root Bubble Tea model.
 type Model struct {
 	active        int
 	width, height int
-	// live status segments (wired to real seams in later epics)
-	statusRun   string
-	statusLane  string
-	statusCost  string
-	statusCN    string
+	statusRun     string
+	statusLane    string
+	statusCost    string
+	statusCN      string
 }
 
-// New builds the dashboard model.
 func New() Model {
-	return Model{
-		active:     0,
-		statusRun:  "idle",
-		statusLane: "—",
-		statusCost: "€0.00",
-		statusCN:   "CN ?",
-	}
+	return Model{statusRun: "idle", statusLane: "—", statusCost: "€0.00", statusCN: "CN ?"}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd { return tickCmd() }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	ms := Modes()
+	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case RefreshMsg:
+		m.refreshStatus()
+		for _, md := range ms { // broadcast refresh to all modes
+			if c := md.Update(msg); c != nil {
+				cmds = append(cmds, c)
+			}
+		}
+		cmds = append(cmds, tickCmd())
+		return m, tea.Batch(cmds...)
 	case tea.KeyMsg:
 		switch s := msg.String(); s {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "0", "1", "2", "3", "4", "5", "6", "7":
-			m.active = int(s[0] - '0')
+			if d := int(s[0] - '0'); d < len(ms) {
+				m.active = d
+			}
+			return m, nil
 		case "left", "h":
 			if m.active > 0 {
 				m.active--
 			}
+			return m, nil
 		case "right", "l":
-			if m.active < len(modes)-1 {
+			if m.active < len(ms)-1 {
 				m.active++
 			}
+			return m, nil
 		}
 	}
-	return m, nil
+	// route everything else to the active mode
+	if m.active < len(ms) {
+		if c := ms[m.active].Update(msg); c != nil {
+			cmds = append(cmds, c)
+		}
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) refreshStatus() {
+	if c, ok := seams.TotalCost(); ok {
+		m.statusCost = fmt.Sprintf("€%.2f", c)
+	}
+	if _, ok := seams.DB(); ok {
+		m.statusRun = "db ok"
+	} else {
+		m.statusRun = "db —"
+	}
 }
 
 func (m Model) View() string {
 	if m.width == 0 {
 		return "starting Coevolve…"
 	}
-	return strings.Join([]string{
-		m.header(),
-		m.body(),
-		m.statusBar(),
-	}, "\n")
+	return m.header() + "\n" + m.body() + "\n" + m.statusBar()
 }
 
 func (m Model) header() string {
-	brand := titleStyle.Render("coevolve") + subStyle.Render("  sovereign ai-dev platform")
+	brand := TitleStyle.Render("coevolve") + SubStyle.Render("  sovereign ai-dev platform")
 	var tabs []string
-	for i, md := range modes {
-		chip := fmt.Sprintf("%d %s", i, md.key)
+	for i, md := range Modes() {
+		chip := fmt.Sprintf("%d %s", md.Meta().Digit, md.Meta().Key)
 		if i == m.active {
 			tabs = append(tabs, tabActive.Render(chip))
 		} else {
@@ -116,19 +140,17 @@ func (m Model) header() string {
 		}
 	}
 	bar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
-	rule := subStyle.Render(strings.Repeat("─", max(0, m.width)))
+	rule := SubStyle.Render(strings.Repeat("─", max(0, m.width)))
 	return brand + "\n" + bar + "\n" + rule
 }
 
 func (m Model) body() string {
-	md := modes[m.active]
-	// Placeholder body — each mode's real panels land in EPIC-05/06/09.
+	ms := Modes()
 	h := max(1, m.height-8)
-	title := titleStyle.Render(fmt.Sprintf("%d · %s", m.active, strings.ToUpper(md.key)))
-	sub := subStyle.Render(md.title)
-	hint := subStyle.Render("digits 0-7 switch · ←/→ prev/next · q quit   (panels wire to real mini-ork data in the next epics)")
-	content := title + "\n" + sub + "\n\n" + hint
-	return lipgloss.NewStyle().Height(h).Render(content)
+	if m.active >= len(ms) {
+		return lipgloss.NewStyle().Height(h).Render(SubStyle.Render("no modes registered"))
+	}
+	return lipgloss.NewStyle().Height(h).Render(ms[m.active].View(m.width, h))
 }
 
 func (m Model) statusBar() string {
@@ -136,10 +158,10 @@ func (m Model) statusBar() string {
 		"◐ " + m.statusRun,
 		"lane " + m.statusLane,
 		"session " + m.statusCost,
-		dotTeal + " " + m.statusCN,
+		TealStyle.Render("●") + " " + m.statusCN,
 	}
 	left := statusStyle.Render(strings.Join(segs, "   "))
-	right := lipgloss.NewStyle().Foreground(subtle).Render("coevolve · real-data-only")
+	right := lipgloss.NewStyle().Foreground(Subtle).Render("coevolve · real-data-only")
 	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", gap) + right
 }
