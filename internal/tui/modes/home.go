@@ -3,6 +3,7 @@ package modes
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -27,6 +28,7 @@ type homeMode struct {
 
 	md      *glamour.TermRenderer // cached markdown renderer
 	mdWidth int
+	mdCache map[string]string // rendered markdown by width:text (avoids per-keystroke re-render)
 
 	history []string // past commands (persisted), oldest→newest
 	histIdx int      // browse cursor; == len(history) means "current draft"
@@ -144,6 +146,12 @@ func (m *homeMode) Update(msg tea.Msg) tea.Cmd {
 
 // renderMarkdown formats an assistant prose block (cached renderer per width).
 func (m *homeMode) renderMarkdown(md string, width int) string {
+	// Cache by width:text so glamour (expensive) runs ONCE per block, not on
+	// every keystroke — this is what keeps typing snappy with an answer on screen.
+	key := strconv.Itoa(width) + ":" + md
+	if v, ok := m.mdCache[key]; ok {
+		return v
+	}
 	if m.md == nil || m.mdWidth != width {
 		// Fixed dark style (matches the Coevolve palette) — AutoStyle degrades
 		// to plain when it can't detect a TTY inside the alt-screen.
@@ -155,12 +163,18 @@ func (m *homeMode) renderMarkdown(md string, width int) string {
 			return md
 		}
 		m.md, m.mdWidth = r, width
+		m.mdCache = map[string]string{} // width changed → drop stale renders
 	}
 	out, err := m.md.Render(md)
 	if err != nil {
 		return md
 	}
-	return strings.TrimRight(out, "\n")
+	res := strings.TrimRight(out, "\n")
+	if m.mdCache == nil {
+		m.mdCache = map[string]string{}
+	}
+	m.mdCache[key] = res
+	return res
 }
 
 func (m *homeMode) View(w, h int) string {

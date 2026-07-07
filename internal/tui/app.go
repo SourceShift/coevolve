@@ -6,12 +6,16 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sourceshift/coevolve/internal/seams"
 )
+
+// disarmQuitMsg resets the double-ctrl+c exit arming after a short delay.
+type disarmQuitMsg struct{}
 
 // Coevolve palette (from the design), exported so mode files share it.
 var (
@@ -62,6 +66,7 @@ type Model struct {
 	paletteQuery string
 	paletteIdx   int
 	helpOpen     bool
+	quitArmed    bool // first ctrl+c arms; second exits
 }
 
 func New() Model {
@@ -76,17 +81,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+	case disarmQuitMsg:
+		m.quitArmed = false
+		return m, nil
 	case RefreshMsg:
 		m.refreshStatus()
-		for _, md := range ms { // broadcast refresh to all modes
-			if c := md.Update(msg); c != nil {
+		if m.active < len(ms) { // refresh ONLY the visible mode (perf: no 8× DB hit)
+			if c := ms[m.active].Update(msg); c != nil {
 				cmds = append(cmds, c)
 			}
 		}
 		cmds = append(cmds, tickCmd())
 		return m, tea.Batch(cmds...)
 	case tea.KeyMsg:
-		if m.helpOpen { // any key closes the help overlay
+		// double ctrl+c to exit: first press arms + hints, second exits.
+		if msg.String() == "ctrl+c" {
+			if m.quitArmed {
+				return m, tea.Quit
+			}
+			m.quitArmed = true
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return disarmQuitMsg{} })
+		}
+		m.quitArmed = false // any other key (incl. ctrl+k) clears the arm
+		if m.helpOpen {     // any key closes the help overlay
 			m.helpOpen = false
 			return m, nil
 		}
@@ -94,28 +111,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePalette(msg)
 		}
 		// If the active mode owns a focused input, keystrokes go to it (typing);
-		// only ctrl+c and ctrl+k stay global.
+		// only ctrl+k / tab stay global.
 		if m.active < len(ms) {
 			if ic, ok := ms[m.active].(InputCapturer); ok && ic.CapturesInput() {
 				switch msg.String() {
-				case "ctrl+c":
-					return m, tea.Quit
 				case "ctrl+k":
 					m.paletteOpen, m.paletteQuery, m.paletteIdx = true, "", 0
 					return m, nil
-				case "tab": // cycle tabs even while the prompt is focused
-					m.active = (m.active + 1) % len(ms)
-					return m, nil
+				case "tab":
+					return m.switchTo(m.active+1, ms)
 				case "shift+tab":
-					m.active = (m.active - 1 + len(ms)) % len(ms)
-					return m, nil
+					return m.switchTo(m.active-1, ms)
 				default:
 					return m, ms[m.active].Update(msg)
 				}
 			}
 		}
 		switch s := msg.String(); s {
-		case "q", "ctrl+c":
+		case "q":
 			return m, tea.Quit
 		case "ctrl+k", ":":
 			m.paletteOpen, m.paletteQuery, m.paletteIdx = true, "", 0
@@ -124,26 +137,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpOpen = true
 			return m, nil
 		case "0", "1", "2", "3", "4", "5", "6", "7":
-			if d := int(s[0] - '0'); d < len(ms) {
-				m.active = d
-			}
-			return m, nil
-		case "left":
-			if m.active > 0 {
-				m.active--
-			}
-			return m, nil
-		case "right":
-			if m.active < len(ms)-1 {
-				m.active++
-			}
-			return m, nil
-		case "tab":
-			m.active = (m.active + 1) % len(ms)
-			return m, nil
-		case "shift+tab":
-			m.active = (m.active - 1 + len(ms)) % len(ms)
-			return m, nil
+			return m.switchTo(int(s[0]-'0'), ms)
+		case "left", "shift+tab":
+			return m.switchTo(m.active-1, ms)
+		case "right", "tab":
+			return m.switchTo(m.active+1, ms)
 		}
 	}
 	// route everything else to the active mode
@@ -247,8 +245,23 @@ func (m Model) statusBar() string {
 	}
 	left := statusStyle.Render(strings.Join(segs, "   "))
 	right := lipgloss.NewStyle().Foreground(Subtle).Render("coevolve · real-data-only")
+	if m.quitArmed {
+		right = AmberStyle.Bold(true).Render("press ctrl+c again to exit")
+	}
 	gap := max(1, m.width-lipgloss.Width(left)-lipgloss.Width(right))
 	return left + strings.Repeat(" ", gap) + right
+}
+
+// switchTo sets the active mode (wrapping) and loads its data immediately so it
+// isn't stale/empty on first view. A sync refresh of one mode is cheap.
+func (m Model) switchTo(idx int, ms []Mode) (tea.Model, tea.Cmd) {
+	n := len(ms)
+	if n == 0 {
+		return m, nil
+	}
+	m.active = ((idx % n) + n) % n
+	ms[m.active].Update(RefreshMsg{})
+	return m, nil
 }
 
 func max(a, b int) int {
