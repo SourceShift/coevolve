@@ -86,9 +86,25 @@ func Start(cfg Config, input string) *Handle {
 	if trimmed != "" && !strings.HasPrefix(trimmed, "/run ") && !mentionsMiniOrk(trimmed) {
 		return StartServe(context.Background(), cfg, trimmed)
 	}
+	return StartSpec(cfg, Spec{Task: strings.TrimSpace(strings.TrimPrefix(trimmed, "/run "))})
+}
+
+// Spec is a fully-resolved mini-ork run: the task, the explicit recipe to run
+// (so we never dead-end on task_class=generic), and a hard cost cap. This is
+// what the interactive pre-flight produces once the user confirms the plan.
+type Spec struct {
+	Task   string  // the work to do
+	Recipe string  // explicit recipe name; "" → let mini-ork classify
+	CapUSD float64 // hard budget cap (MO_DAILY_BUDGET_USD); 0 → leave unset
+	Live   bool    // spend real money; false → dry-run
+}
+
+// StartSpec dispatches mini-ork for a confirmed Spec and streams design-style
+// node rows enriched with real per-node cost/lane.
+func StartSpec(cfg Config, spec Spec) *Handle {
 	ctx, cancel := context.WithCancel(context.Background())
 	out := make(chan Line, 64)
-	cmd, banner := build(ctx, cfg, trimmed)
+	cmd, banner := buildSpec(ctx, cfg, spec)
 
 	go func() {
 		defer close(out)
@@ -142,19 +158,25 @@ func Start(cfg Config, input string) *Handle {
 	return &Handle{Lines: out, cancel: cancel}
 }
 
-// build chooses the command + a human banner for the input.
-func build(ctx context.Context, cfg Config, input string) (*exec.Cmd, string) {
-	// build() is only reached for orchestration (explicit /run or a mini-ork
-	// mention). Extract the task text and dispatch mini-ork.
-	task := strings.TrimSpace(strings.TrimPrefix(input, "/run "))
-	if task == "" {
-		task = strings.TrimSpace(input)
-	}
+// buildSpec constructs the mini-ork command for a confirmed Spec + a banner.
+// When Spec.Recipe is set we pass it explicitly (`mini-ork run <recipe>
+// <kickoff>`), which skips the classifier — the fix for tasks that would
+// otherwise classify as `generic` and dead-end with "could not resolve recipe".
+func buildSpec(ctx context.Context, cfg Config, spec Spec) (*exec.Cmd, string) {
+	task := strings.TrimSpace(spec.Task)
 	kick := writeKickoff(task)
-	c := exec.CommandContext(ctx, filepath.Join(cfg.MiniOrkRoot, "bin", "mini-ork"), "run", kick)
+	bin := filepath.Join(cfg.MiniOrkRoot, "bin", "mini-ork")
+	var args []string
+	if spec.Recipe != "" {
+		args = []string{"run", spec.Recipe, kick}
+	} else {
+		args = []string{"run", kick}
+	}
+	c := exec.CommandContext(ctx, bin, args...)
 	c.Dir = cfg.TargetCWD
+	live := spec.Live || cfg.Live
 	dry := "1"
-	if cfg.Live {
+	if live {
 		dry = "0"
 	}
 	c.Env = append(os.Environ(),
@@ -165,11 +187,18 @@ func build(ctx context.Context, cfg Config, input string) (*exec.Cmd, string) {
 		"MINI_ORK_NONINTERACTIVE=1", // auto-answer the profile gate from the kickoff
 		"MINI_ORK_DRY_RUN="+dry,
 	)
-	mode := "dry-run · set COEVOLVE_LIVE=1 to spend"
-	if cfg.Live {
+	if spec.CapUSD > 0 {
+		c.Env = append(c.Env, fmt.Sprintf("MO_DAILY_BUDGET_USD=%.2f", spec.CapUSD))
+	}
+	mode := "dry-run"
+	if live {
 		mode = "LIVE"
 	}
-	return c, fmt.Sprintf("› mini-ork · %s · %s", task, mode)
+	rec := spec.Recipe
+	if rec == "" {
+		rec = "auto"
+	}
+	return c, fmt.Sprintf("› mini-ork · %s · %s · %s", rec, mode, task)
 }
 
 var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")

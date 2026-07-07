@@ -32,6 +32,14 @@ type InputCapturer interface {
 	CapturesInput() bool
 }
 
+// InputBusy is an optional refinement: a focused input-capturing mode reports
+// whether its input currently holds text. When it's empty, the root treats a
+// bare digit as a mode-switch (so 1/2/… jump tabs) instead of typing it — you
+// only lose digit-typing once you've actually started composing a task.
+type InputBusy interface {
+	InputBusy() bool
+}
+
 // RefreshMsg is broadcast on a timer so modes reload real data from the seams.
 type RefreshMsg struct{}
 

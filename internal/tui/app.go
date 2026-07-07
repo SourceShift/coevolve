@@ -114,7 +114,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// only ctrl+k / tab stay global.
 		if m.active < len(ms) {
 			if ic, ok := ms[m.active].(InputCapturer); ok && ic.CapturesInput() {
-				switch msg.String() {
+				switch s := msg.String(); s {
 				case "ctrl+k":
 					m.paletteOpen, m.paletteQuery, m.paletteIdx = true, "", 0
 					return m, nil
@@ -122,6 +122,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m.switchTo(m.active+1, ms)
 				case "shift+tab":
 					return m.switchTo(m.active-1, ms)
+				case "0", "1", "2", "3", "4", "5", "6", "7":
+					// A bare digit switches tabs when the input is empty; once
+					// you're mid-task it types normally.
+					if ib, ok := ms[m.active].(InputBusy); ok && !ib.InputBusy() {
+						return m.switchTo(int(s[0]-'0'), ms)
+					}
+					return m, ms[m.active].Update(msg)
 				default:
 					return m, ms[m.active].Update(msg)
 				}

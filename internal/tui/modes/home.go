@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,10 +12,29 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/sourceshift/coevolve/internal/plan"
 	"github.com/sourceshift/coevolve/internal/run"
 	"github.com/sourceshift/coevolve/internal/session"
 	"github.com/sourceshift/coevolve/internal/tui"
 )
+
+// capPresets are the selectable hard budget caps ($, MO_DAILY_BUDGET_USD).
+var capPresets = []float64{1, 2, 3, 4, 5, 10, 25}
+
+// preflight is the interactive plan card shown after a task is submitted and
+// before any spend: the user sees which recipe (topology + lanes) will run and
+// the cost cap, and confirms or adjusts. Every task goes through mini-ork —
+// this is the guide, not a bypass.
+type preflight struct {
+	task    string
+	options []plan.Recipe // installed, suggested-first
+	idx     int           // selected recipe
+	capIdx  int           // index into capPresets
+	live    bool
+}
+
+func (p *preflight) recipe() plan.Recipe { return p.options[p.idx] }
+func (p *preflight) cap() float64        { return capPresets[p.capIdx] }
 
 // homeMode is the command surface — like Claude/opencode: type a task, the
 // configured main LLM does the work and streams back (tool calls live, prose as
@@ -36,6 +56,8 @@ type homeMode struct {
 	draft   string   // in-progress input stashed while browsing history
 
 	sess *session.Log // per-session JSONL transcript
+
+	pf *preflight // non-nil while showing the plan card (awaiting confirm)
 }
 
 type homeLineMsg struct {
@@ -79,6 +101,13 @@ func (m *homeMode) Meta() tui.ModeMeta {
 
 func (m *homeMode) CapturesInput() bool { return m.focused }
 
+// InputBusy reports whether the REPL is mid-composition or mid-preflight — when
+// so, bare digits stay with the mode (recipe pick / typing) instead of switching
+// tabs.
+func (m *homeMode) InputBusy() bool {
+	return m.pf != nil || strings.TrimSpace(m.input.Value()) != ""
+}
+
 func (m *homeMode) wait() tea.Cmd {
 	h := m.handle
 	return func() tea.Msg {
@@ -102,6 +131,9 @@ func (m *homeMode) Update(msg tea.Msg) tea.Cmd {
 		m.sess.Append(session.Event{Type: "run_end"})
 		return nil
 	case tea.KeyMsg:
+		if m.pf != nil { // plan card is up — its keys take precedence
+			return m.updatePreflight(msg)
+		}
 		switch msg.String() {
 		case "i":
 			if !m.focused {
@@ -155,9 +187,10 @@ func (m *homeMode) Update(msg tea.Msg) tea.Cmd {
 			m.history = appendHistory(m.history, v)
 			m.histIdx = len(m.history)
 			m.draft = ""
-			m.handle = run.Start(m.cfg, v)
-			m.running = true
-			return m.wait()
+			// Every task goes through mini-ork — but guide the user first: open
+			// the pre-flight plan card (recipe · topology · cost) to confirm.
+			m.openPreflight(v)
+			return nil
 		}
 		if m.focused {
 			var cmd tea.Cmd
@@ -166,6 +199,111 @@ func (m *homeMode) Update(msg tea.Msg) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// openPreflight builds the plan card for a submitted task: it suggests a recipe
+// from the task text, lists the other installed recipes so the user can switch,
+// and picks a sane default cost cap. Nothing spends until the user confirms.
+func (m *homeMode) openPreflight(task string) {
+	task = strings.TrimSpace(strings.TrimPrefix(task, "/run "))
+	installed := plan.Installed(plan.RecipesRoot(m.cfg.MiniOrkRoot))
+	suggested := plan.Suggest(task)
+	// Put the suggestion first so idx 0 is the recommended plan.
+	opts := []plan.Recipe{suggested}
+	for _, r := range installed {
+		if r.Name != suggested.Name {
+			opts = append(opts, r)
+		}
+	}
+	// Default cap = the suggestion's suggested cap (nearest preset).
+	capIdx := 3 // $4
+	for i, c := range capPresets {
+		if c >= suggested.CapUSD {
+			capIdx = i
+			break
+		}
+	}
+	m.pf = &preflight{task: task, options: opts, idx: 0, capIdx: capIdx, live: m.cfg.Live}
+}
+
+// updatePreflight handles keys while the plan card is up.
+func (m *homeMode) updatePreflight(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.pf = nil
+		m.feed = append(m.feed, run.Line{Text: tui.SubStyle.Render("  ✗ cancelled"), Err: true})
+		return nil
+	case "r", "down", "right":
+		m.pf.idx = (m.pf.idx + 1) % len(m.pf.options)
+		return nil
+	case "shift+r", "up", "left":
+		m.pf.idx = (m.pf.idx - 1 + len(m.pf.options)) % len(m.pf.options)
+		return nil
+	case "c":
+		m.pf.capIdx = (m.pf.capIdx + 1) % len(capPresets)
+		return nil
+	case "l":
+		m.pf.live = !m.pf.live
+		return nil
+	case "enter":
+		pf := m.pf
+		rec := pf.recipe()
+		m.pf = nil
+		spec := run.Spec{Task: pf.task, Recipe: rec.Name, CapUSD: pf.cap(), Live: pf.live}
+		mode := "dry-run"
+		if pf.live {
+			mode = tui.AmberStyle.Render("LIVE")
+		}
+		m.feed = append(m.feed, run.Line{Text: tui.TealStyle.Render(
+			"  → dispatching ") + rec.Title + tui.SubStyle.Render(
+			" · "+rec.Name+" · cap $"+strconv.FormatFloat(pf.cap(), 'f', 0, 64)+" · "+mode)})
+		m.sess.Append(session.Event{Type: "run_start", Text: pf.task, Meta: map[string]any{
+			"recipe": rec.Name, "cap_usd": pf.cap(), "live": pf.live}})
+		m.handle = run.StartSpec(m.cfg, spec)
+		m.running = true
+		return m.wait()
+	}
+	return nil
+}
+
+// renderPreflight draws the plan card.
+func (m *homeMode) renderPreflight(w int) string {
+	pf := m.pf
+	rec := pf.recipe()
+	label := lipgloss.NewStyle().Foreground(tui.Muted)
+	key := lipgloss.NewStyle().Foreground(tui.Violet)
+	val := lipgloss.NewStyle().Foreground(tui.FG)
+	row := func(k, v string) string {
+		return "    " + label.Width(10).Render(k) + v + "\n"
+	}
+	// Topology: show first ~6 nodes then a count.
+	nodes := rec.Nodes
+	shown := nodes
+	tail := ""
+	if len(nodes) > 6 {
+		shown = nodes[:6]
+		tail = fmt.Sprintf(" … (%d nodes)", len(nodes))
+	} else {
+		tail = fmt.Sprintf("  (%d nodes)", len(nodes))
+	}
+	topo := tui.TealStyle.Render(strings.Join(shown, " → ")) + tui.SubStyle.Render(tail)
+
+	mode := "dry-run  " + tui.SubStyle.Render("(no spend)")
+	if pf.live {
+		mode = tui.AmberStyle.Render("LIVE  ") + tui.SubStyle.Render("(real spend)")
+	}
+
+	var b strings.Builder
+	b.WriteString(key.Render("  ◆ mini-ork pre-flight ") + tui.SubStyle.Render("— confirm the plan before spend\n\n"))
+	b.WriteString(row("task", val.Render(truncate(pf.task, maxWidth(w)-14))))
+	b.WriteString(row("recipe", val.Render(rec.Title)+tui.SubStyle.Render("   "+key.Render("r")+" change")))
+	b.WriteString("    " + label.Width(10).Render("") + tui.SubStyle.Render(truncate(rec.Purpose, maxWidth(w)-14)) + "\n")
+	b.WriteString(row("topology", topo))
+	b.WriteString(row("lanes", tui.SubStyle.Render(rec.Lanes)))
+	b.WriteString(row("max cost", val.Render("$"+strconv.FormatFloat(pf.cap(), 'f', 0, 64))+tui.SubStyle.Render("   "+key.Render("c")+" change")))
+	b.WriteString(row("mode", mode+tui.SubStyle.Render("   "+key.Render("l")+" toggle")))
+	b.WriteString("\n  " + tui.SubStyle.Render(key.Render("enter")+" run · "+key.Render("r/c/l")+" adjust · "+key.Render("esc")+" cancel"))
+	return b.String()
 }
 
 // renderMarkdown formats an assistant prose block (cached renderer per width).
@@ -215,7 +353,7 @@ func (m *homeMode) View(w, h int) string {
 		start = len(m.feed) - maxLines
 	}
 	if len(m.feed) == 0 {
-		b.WriteString(tui.SubStyle.Render("  type a task — the main LLM does it (streams here). Naming mini-ork, or /run, orchestrates.\n"))
+		b.WriteString(tui.SubStyle.Render("  describe a task — mini-ork runs it. You'll confirm the recipe, topology & cost cap first.\n"))
 		if m.sess != nil {
 			b.WriteString(tui.SubStyle.Render("  session log · " + m.sess.Path + "\n"))
 		}
@@ -232,12 +370,17 @@ func (m *homeMode) View(w, h int) string {
 		}
 	}
 
+	if m.pf != nil { // plan card replaces the input row while confirming
+		b.WriteString("\n" + m.renderPreflight(w) + "\n")
+		return b.String()
+	}
+
 	status := ""
 	if m.running {
 		status = tui.AmberStyle.Render("  ● running (ctrl+u to stop)")
 	}
 	b.WriteString("\n" + m.input.View() + status + "\n")
-	hint := "tab: switch tab · enter: run · /run <task>: orchestration · esc: unfocus · ⌘K: palette"
+	hint := "tab: switch tab · enter: plan & run (mini-ork) · esc: unfocus · ⌘K: palette"
 	if !m.focused {
 		hint = "i: focus input · digits: switch modes · " + hint
 	}
