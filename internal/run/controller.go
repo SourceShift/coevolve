@@ -94,8 +94,12 @@ func Start(cfg Config, input string) *Handle {
 				if strings.TrimSpace(txt) == "" {
 					continue
 				}
+				row, keep := miniOrkRow(txt) // render the loop inline (design style)
+				if !keep {
+					continue
+				}
 				select {
-				case out <- Line{Text: txt, Err: isErr}:
+				case out <- Line{Text: row, Err: isErr}:
 				case <-ctx.Done():
 					done <- struct{}{}
 					return
@@ -155,6 +159,42 @@ func build(ctx context.Context, cfg Config, input string) (*exec.Cmd, string) {
 var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
 
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+// miniOrkRow maps mini-ork's key=value stage output to a clean node-stream row
+// matching the design (● <node> · <detail>). Drops noise (returns keep=false),
+// passes through real agent/error output. This makes /run read like the design's
+// Home run-stream instead of raw stdout.
+func miniOrkRow(line string) (row string, keep bool) {
+	l := strings.TrimSpace(line)
+	switch {
+	case strings.HasPrefix(l, "task_class="):
+		return "● classify · " + strings.TrimPrefix(l, "task_class="), true
+	case strings.HasPrefix(l, "run_id="):
+		return "  " + l, true
+	case strings.HasPrefix(l, "plan_path="), strings.HasPrefix(l, "plan_status="):
+		return "● plan · ready", true
+	case strings.HasPrefix(l, "profile_status=needs_answers"):
+		return "⚠ needs answers · auto-answering from kickoff", true
+	case strings.HasPrefix(l, "artifact_path="):
+		p := strings.Trim(strings.TrimPrefix(l, "artifact_path="), `"`)
+		if p == "" {
+			return "● execute", true
+		}
+		return "● execute · " + filepath.Base(p), true
+	case strings.Contains(l, `"pass":false`), strings.Contains(l, "REQUEST_CHANGES"):
+		return "● verify · ✗", true
+	case strings.Contains(l, `"pass":true`), strings.HasPrefix(l, "verdict=") && strings.Contains(l, "approve"):
+		return "● verify · ✓", true
+	case strings.HasPrefix(l, "reflect"), strings.Contains(l, "gradient"):
+		return "● reflect · → ContextNest", true
+	case strings.HasPrefix(l, "workflow_version="), strings.HasPrefix(l, "kickoff="),
+		strings.HasPrefix(l, "profile_confidence="), strings.HasPrefix(l, "profile_questions="),
+		strings.HasPrefix(l, "profile_path="), strings.HasPrefix(l, "[dry-run]"):
+		return "", false // drop noise
+	default:
+		return line, true // pass through real agent output / errors
+	}
+}
 
 func writeKickoff(task string) string {
 	dir := filepath.Join(os.TempDir(), "coevolve-kickoffs")
