@@ -103,6 +103,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "ctrl+k":
 					m.paletteOpen, m.paletteQuery, m.paletteIdx = true, "", 0
 					return m, nil
+				case "tab": // cycle tabs even while the prompt is focused
+					m.active = (m.active + 1) % len(ms)
+					return m, nil
+				case "shift+tab":
+					m.active = (m.active - 1 + len(ms)) % len(ms)
+					return m, nil
 				default:
 					return m, ms[m.active].Update(msg)
 				}
@@ -131,6 +137,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.active < len(ms)-1 {
 				m.active++
 			}
+			return m, nil
+		case "tab":
+			m.active = (m.active + 1) % len(ms)
+			return m, nil
+		case "shift+tab":
+			m.active = (m.active - 1 + len(ms)) % len(ms)
 			return m, nil
 		}
 	}

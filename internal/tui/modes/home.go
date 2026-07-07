@@ -132,7 +132,7 @@ func (m *homeMode) View(w, h int) string {
 		status = tui.AmberStyle.Render("  ● running (ctrl+u to stop)")
 	}
 	b.WriteString("\n" + m.input.View() + status + "\n")
-	hint := "enter: run · /run <task>: full orchestration · esc: unfocus · ⌘K: palette"
+	hint := "tab: switch tab · enter: run · /run <task>: orchestration · esc: unfocus · ⌘K: palette"
 	if !m.focused {
 		hint = "i: focus input · digits: switch modes · " + hint
 	}
