@@ -29,12 +29,18 @@ func DBPath() string {
 
 // DB opens the state DB read-only. Returns (nil,false) when absent — callers
 // render a DEGRADED marker rather than fabricate.
-func DB() (*sql.DB, bool) {
-	p := DBPath()
-	if _, err := os.Stat(p); err != nil {
+func DB() (*sql.DB, bool) { return OpenAt(DBPath()) }
+
+// OpenAt opens an arbitrary state DB read-only (e.g. a foreign run's
+// .mini-ork/state.db). Returns (nil,false) when absent/unopenable.
+func OpenAt(path string) (*sql.DB, bool) {
+	if path == "" {
 		return nil, false
 	}
-	db, err := sql.Open("sqlite", "file:"+p+"?mode=ro")
+	if _, err := os.Stat(path); err != nil {
+		return nil, false
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
 	if err != nil {
 		return nil, false
 	}

@@ -7,6 +7,7 @@ package run
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +15,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/sourceshift/coevolve/internal/seams"
 )
 
 // Config is the resolved runtime: where mini-ork lives, where work happens, and
@@ -86,6 +90,8 @@ func Start(cfg Config, input string) *Handle {
 			return
 		}
 		done := make(chan struct{}, 2)
+		enr := &miniOrkEnricher{cfg: cfg}
+		defer enr.close()
 		pump := func(r io.Reader, isErr bool) {
 			sc := bufio.NewScanner(r)
 			sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -94,7 +100,7 @@ func Start(cfg Config, input string) *Handle {
 				if strings.TrimSpace(txt) == "" {
 					continue
 				}
-				row, keep := miniOrkRow(txt) // render the loop inline (design style)
+				row, keep := enr.row(txt) // design-style node rows + real cost/lane
 				if !keep {
 					continue
 				}
@@ -193,6 +199,72 @@ func miniOrkRow(line string) (row string, keep bool) {
 		return "", false // drop noise
 	default:
 		return line, true // pass through real agent output / errors
+	}
+}
+
+// miniOrkEnricher augments the /run node-stream with REAL per-node cost + lane,
+// read from the run's own .mini-ork/state.db as mini-ork writes to it.
+type miniOrkEnricher struct {
+	cfg      Config
+	mu       sync.Mutex
+	runID    string
+	db       *sql.DB
+	dbTried  bool
+	lastCost float64
+}
+
+func (e *miniOrkEnricher) row(line string) (string, bool) {
+	l := strings.TrimSpace(line)
+	if id, ok := strings.CutPrefix(l, "run_id="); ok {
+		e.mu.Lock()
+		e.runID = id
+		e.mu.Unlock()
+	}
+	row, keep := miniOrkRow(line)
+	if !keep {
+		return "", false
+	}
+	if strings.HasPrefix(row, "●") {
+		if lane, cost, ok := e.nodeStat(); ok {
+			row += fmt.Sprintf("  · %s · €%.4f", lane, cost)
+		}
+	}
+	return row, keep
+}
+
+// nodeStat returns the lane + per-node cost delta since the previous node.
+func (e *miniOrkEnricher) nodeStat() (lane string, cost float64, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runID == "" {
+		return "", 0, false
+	}
+	if !e.dbTried {
+		e.dbTried = true
+		p := filepath.Join(e.cfg.TargetCWD, ".mini-ork", "state.db")
+		if db, ok := seams.OpenAt(p); ok {
+			e.db = db
+		}
+	}
+	if e.db == nil {
+		return "", 0, false
+	}
+	var total float64
+	_ = e.db.QueryRow(`SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE run_id=?`, e.runID).Scan(&total)
+	_ = e.db.QueryRow(`SELECT COALESCE(model_id,'') FROM llm_calls WHERE run_id=? ORDER BY ts DESC LIMIT 1`, e.runID).Scan(&lane)
+	delta := total - e.lastCost
+	e.lastCost = total
+	if lane == "" && delta <= 0 {
+		return "", 0, false // nothing new to attribute
+	}
+	return lane, delta, true
+}
+
+func (e *miniOrkEnricher) close() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.db != nil {
+		_ = e.db.Close()
 	}
 }
 
