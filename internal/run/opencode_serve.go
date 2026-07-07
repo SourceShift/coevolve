@@ -33,6 +33,16 @@ type serveWorker struct {
 	stderrBuf  *ringBuffer
 	failed     bool
 	seen       map[string]struct{} // dedupe repeated part updates
+	textBuf    strings.Builder     // holds the latest cumulative assistant prose
+}
+
+// flushText emits the accumulated assistant prose as one markdown block.
+func (w *serveWorker) flushText() {
+	t := strings.TrimSpace(w.textBuf.String())
+	w.textBuf.Reset()
+	if t != "" {
+		w.emit(Line{Text: t, Markdown: true})
+	}
 }
 
 type ringBuffer struct {
@@ -258,8 +268,10 @@ func (w *serveWorker) streamEvents(ctx context.Context) error {
 		case "message.part.updated":
 			w.handlePartUpdated(ev.Properties)
 		case "session.idle":
+			w.flushText()
 			return nil
 		case "session.error":
+			w.flushText()
 			w.failed = true
 			w.emit(Line{Text: "■ session error: " + extractError(ev.Properties), Err: true})
 			return nil
@@ -307,10 +319,13 @@ func (w *serveWorker) handlePartUpdated(raw json.RawMessage) {
 		if t == "" || t == strings.TrimSpace(w.prompt) {
 			return // skip empty + the echoed user prompt
 		}
-		w.emit(Line{Text: stripANSI(p.Text)})
+		// text parts arrive cumulative — keep the latest full text, flushed later.
+		w.textBuf.Reset()
+		w.textBuf.WriteString(stripANSI(p.Text))
 	case "tool":
 		switch p.State.Status {
 		case "running":
+			w.flushText() // render any prose that preceded this tool
 			if w.once("run:" + p.Tool + string(p.State.Input)) {
 				w.emit(Line{Text: fmt.Sprintf("● %s(%s)", p.Tool, inputSummary(p.State.Input))})
 			}
@@ -320,6 +335,7 @@ func (w *serveWorker) handlePartUpdated(raw json.RawMessage) {
 			}
 		}
 	case "step-finish":
+		w.flushText()
 		w.emit(Line{Text: fmt.Sprintf("✓ %d→%d tok · $%.4f",
 			p.Tokens.Input, p.Tokens.Output, p.Cost)})
 	}

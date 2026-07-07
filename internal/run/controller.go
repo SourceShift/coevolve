@@ -44,10 +44,12 @@ func DefaultConfig() Config {
 	}
 }
 
-// Line is one streamed output line.
+// Line is one streamed output line. Markdown lines are a completed block of
+// assistant prose the renderer should format (bold/headers/code) via glamour.
 type Line struct {
-	Text string
-	Err  bool
+	Text     string
+	Err      bool
+	Markdown bool
 }
 
 // Handle is a running job; Cancel stops it (and reaps the process).
