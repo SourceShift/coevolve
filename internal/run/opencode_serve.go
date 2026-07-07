@@ -418,7 +418,8 @@ func StartServe(ctx context.Context, cfg Config, prompt string) *Handle {
 		defer close(out)
 		defer w.killServe()
 
-		out <- Line{Text: fmt.Sprintf("› %s  (main LLM: %s)", prompt, cfg.WorkerModel)}
+		// Home already echoes the prompt; just note the model (no re-echo).
+		out <- Line{Text: fmt.Sprintf("  · main LLM: %s", cfg.WorkerModel)}
 
 		tmp, err := mkTempXDG()
 		if err != nil {

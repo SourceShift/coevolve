@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sourceshift/coevolve/internal/run"
 	"github.com/sourceshift/coevolve/internal/tui"
@@ -123,8 +124,9 @@ func (m *homeMode) View(w, h int) string {
 		b.WriteString(tui.SubStyle.Render("  type a task below — the main LLM does it and streams here.\n"))
 		b.WriteString(tui.SubStyle.Render("  prefix /run to orchestrate the full mini-ork loop instead.\n"))
 	}
+	wrap := lipgloss.NewStyle().Width(maxWidth(w))
 	for _, l := range m.feed[start:] {
-		b.WriteString(l + "\n")
+		b.WriteString(wrap.Render(l) + "\n")
 	}
 
 	status := ""
@@ -138,4 +140,11 @@ func (m *homeMode) View(w, h int) string {
 	}
 	b.WriteString(tui.SubStyle.Render(hint))
 	return b.String()
+}
+
+func maxWidth(w int) int {
+	if w < 20 {
+		return 20
+	}
+	return w - 2
 }
