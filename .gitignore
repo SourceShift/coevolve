@@ -4,3 +4,13 @@
 .mini-ork/
 .venv/
 __pycache__/
+
+.mini-ork/state.db
+
+.mini-ork/runs/
+
+.mini-ork/INBOX/
+
+.mini-ork/secrets/
+
+.mini-ork/locks/

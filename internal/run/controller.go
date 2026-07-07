@@ -39,7 +39,7 @@ func DefaultConfig() Config {
 	return Config{
 		MiniOrkRoot: env("MINI_ORK_ROOT", "/Volumes/docker-ssd/ps/mo-fix"),
 		TargetCWD:   env("MO_TARGET_CWD", cwd),
-		WorkerModel: env("COEVOLVE_WORKER_MODEL", env("MO_OPENCODE_MODEL", "opencode/deepseek-v4-flash-free")),
+		WorkerModel: env("COEVOLVE_WORKER_MODEL", env("MO_OPENCODE_MODEL", "deepinfra/deepseek-ai/DeepSeek-V4-Flash")),
 		Live:        os.Getenv("COEVOLVE_LIVE") == "1",
 	}
 }
@@ -66,9 +66,13 @@ func (h *Handle) Stop() {
 // streaming its work. "/run <task>" → a full mini-ork orchestration. Returns a
 // Handle whose Lines channel closes when the job ends.
 func Start(cfg Config, input string) *Handle {
+	trimmed := strings.TrimSpace(input)
+	if trimmed != "" && !strings.HasPrefix(trimmed, "/run ") {
+		return StartServe(context.Background(), cfg, trimmed)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	out := make(chan Line, 64)
-	cmd, banner := build(ctx, cfg, strings.TrimSpace(input))
+	cmd, banner := build(ctx, cfg, trimmed)
 
 	go func() {
 		defer close(out)
