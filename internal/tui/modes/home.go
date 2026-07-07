@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/sourceshift/coevolve/internal/run"
+	"github.com/sourceshift/coevolve/internal/session"
 	"github.com/sourceshift/coevolve/internal/tui"
 )
 
@@ -33,6 +34,8 @@ type homeMode struct {
 	history []string // past commands (persisted), oldest→newest
 	histIdx int      // browse cursor; == len(history) means "current draft"
 	draft   string   // in-progress input stashed while browsing history
+
+	sess *session.Log // per-session JSONL transcript
 }
 
 type homeLineMsg struct {
@@ -49,7 +52,25 @@ func init() {
 	tui.RegisterMode(&homeMode{
 		input: ti, cfg: run.DefaultConfig(), focused: true,
 		history: hist, histIdx: len(hist),
+		sess: session.New(),
 	})
+}
+
+// logType classifies a streamed line for the session transcript.
+func logType(l run.Line) string {
+	t := strings.TrimSpace(l.Text)
+	switch {
+	case l.Markdown:
+		return "assistant"
+	case l.Err:
+		return "status"
+	case strings.HasPrefix(t, "●"), strings.HasPrefix(t, "  ⎿"):
+		return "tool"
+	case strings.HasPrefix(t, "✓") && strings.Contains(t, "tok"):
+		return "cost"
+	default:
+		return "output"
+	}
 }
 
 func (m *homeMode) Meta() tui.ModeMeta {
@@ -74,9 +95,11 @@ func (m *homeMode) Update(msg tea.Msg) tea.Cmd {
 	case homeLineMsg:
 		if msg.ok {
 			m.feed = append(m.feed, msg.line)
+			m.sess.Append(session.Event{Type: logType(msg.line), Text: msg.line.Text, Err: msg.line.Err, Markdown: msg.line.Markdown})
 			return m.wait()
 		}
 		m.running = false
+		m.sess.Append(session.Event{Type: "run_end"})
 		return nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -127,6 +150,7 @@ func (m *homeMode) Update(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			m.feed = append(m.feed, run.Line{Text: tui.TealStyle.Render("› ") + v})
+			m.sess.Append(session.Event{Type: "user", Text: v})
 			m.input.SetValue("")
 			m.history = appendHistory(m.history, v)
 			m.histIdx = len(m.history)
@@ -191,8 +215,10 @@ func (m *homeMode) View(w, h int) string {
 		start = len(m.feed) - maxLines
 	}
 	if len(m.feed) == 0 {
-		b.WriteString(tui.SubStyle.Render("  type a task below — the main LLM does it and streams here.\n"))
-		b.WriteString(tui.SubStyle.Render("  prefix /run to orchestrate the full mini-ork loop instead.\n"))
+		b.WriteString(tui.SubStyle.Render("  type a task — the main LLM does it (streams here). Naming mini-ork, or /run, orchestrates.\n"))
+		if m.sess != nil {
+			b.WriteString(tui.SubStyle.Render("  session log · " + m.sess.Path + "\n"))
+		}
 	}
 	wrap := lipgloss.NewStyle().Width(maxWidth(w))
 	for _, l := range m.feed[start:] {

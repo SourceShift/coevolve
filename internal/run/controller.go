@@ -71,9 +71,19 @@ func (h *Handle) Stop() {
 // Start dispatches `input`. Plain text → the configured main LLM (opencode),
 // streaming its work. "/run <task>" → a full mini-ork orchestration. Returns a
 // Handle whose Lines channel closes when the job ends.
+// mentionsMiniOrk detects a task that clearly wants the orchestrator (so it's
+// routed to mini-ork even without the /run prefix), rather than the chat LLM.
+func mentionsMiniOrk(s string) bool {
+	l := strings.ToLower(s)
+	return strings.Contains(l, "mini-ork") || strings.Contains(l, "mini ork") ||
+		strings.Contains(l, "miniork") || strings.Contains(l, "orchestrate")
+}
+
 func Start(cfg Config, input string) *Handle {
 	trimmed := strings.TrimSpace(input)
-	if trimmed != "" && !strings.HasPrefix(trimmed, "/run ") {
+	// Plain text → the main LLM (opencode). Explicit /run OR a task naming
+	// mini-ork → full orchestration.
+	if trimmed != "" && !strings.HasPrefix(trimmed, "/run ") && !mentionsMiniOrk(trimmed) {
 		return StartServe(context.Background(), cfg, trimmed)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -134,32 +144,32 @@ func Start(cfg Config, input string) *Handle {
 
 // build chooses the command + a human banner for the input.
 func build(ctx context.Context, cfg Config, input string) (*exec.Cmd, string) {
-	if task, ok := strings.CutPrefix(input, "/run "); ok {
-		kick := writeKickoff(task)
-		c := exec.CommandContext(ctx, filepath.Join(cfg.MiniOrkRoot, "bin", "mini-ork"), "run", kick)
-		c.Dir = cfg.TargetCWD
-		dry := "1"
-		if cfg.Live {
-			dry = "0"
-		}
-		c.Env = append(os.Environ(),
-			"MINI_ORK_ROOT="+cfg.MiniOrkRoot,
-			"MO_TARGET_CWD="+cfg.TargetCWD,
-			"MO_OPENCODE_MODEL="+cfg.WorkerModel,
-			"MO_IMPLEMENTER_LANE=opencode",
-			"MINI_ORK_DRY_RUN="+dry,
-		)
-		mode := "dry-run (set COEVOLVE_LIVE=1 to spend)"
-		if cfg.Live {
-			mode = "LIVE"
-		}
-		return c, fmt.Sprintf("› mini-ork run · %s · worker=%s · %s", task, cfg.WorkerModel, mode)
+	// build() is only reached for orchestration (explicit /run or a mini-ork
+	// mention). Extract the task text and dispatch mini-ork.
+	task := strings.TrimSpace(strings.TrimPrefix(input, "/run "))
+	if task == "" {
+		task = strings.TrimSpace(input)
 	}
-	// default: the configured main LLM via opencode, streaming its work
-	c := exec.CommandContext(ctx, "opencode", "run", "-m", cfg.WorkerModel,
-		"--pure", "--dangerously-skip-permissions", input)
+	kick := writeKickoff(task)
+	c := exec.CommandContext(ctx, filepath.Join(cfg.MiniOrkRoot, "bin", "mini-ork"), "run", kick)
 	c.Dir = cfg.TargetCWD
-	return c, fmt.Sprintf("› %s  (main LLM: %s)", input, cfg.WorkerModel)
+	dry := "1"
+	if cfg.Live {
+		dry = "0"
+	}
+	c.Env = append(os.Environ(),
+		"MINI_ORK_ROOT="+cfg.MiniOrkRoot,
+		"MO_TARGET_CWD="+cfg.TargetCWD,
+		"MO_OPENCODE_MODEL="+cfg.WorkerModel,
+		"MO_IMPLEMENTER_LANE=codex", // reliable headless coder (opencode-run hangs on tools)
+		"MINI_ORK_NONINTERACTIVE=1", // auto-answer the profile gate from the kickoff
+		"MINI_ORK_DRY_RUN="+dry,
+	)
+	mode := "dry-run · set COEVOLVE_LIVE=1 to spend"
+	if cfg.Live {
+		mode = "LIVE"
+	}
+	return c, fmt.Sprintf("› mini-ork · %s · %s", task, mode)
 }
 
 var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
