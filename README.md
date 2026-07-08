@@ -33,10 +33,36 @@ node — with per-node cost, lane, and status pulled straight from mini-ork's
 
 ## Requirements
 
-- **Go 1.25+** (to build)
-- **[opencode](https://opencode.ai)** CLI, authenticated — Coevolve inherits your
-  `~/.local/share/opencode/auth.json` and env keys (OpenAI/Cloudflare/etc.)
-- A **mini-ork** checkout, reachable at runtime via `MINI_ORK_ROOT`
+Coevolve is a **front-end over a stack** — it doesn't do the work itself, it
+drives and visualizes the subsystems below. On its own the binary builds and
+launches, but every panel will read "offline" until you wire in its sources.
+
+**To build**
+
+- **Go 1.25+**
+
+**Required at runtime** (without these, Coevolve has nothing to drive)
+
+- **[opencode](https://opencode.ai)** CLI, authenticated — the LLM worker for
+  both chat and the implementer lane. Coevolve inherits your
+  `~/.local/share/opencode/auth.json` and env keys (OpenAI/Cloudflare/etc.).
+- **[mini-ork](https://)** checkout — the orchestrator. `/run` shells out to it,
+  and its `state.db` is the source for the **Runs, Router, Topology, Cost, Logs,
+  and Learning** panels. Point Coevolve at it with `MINI_ORK_ROOT`.
+
+**Optional — enables specific modes**
+
+- **ContextNest** — a separate HTTP service (Rust/axum) that backs the
+  **ContextNest** mode (capsules · basins · graph). Coevolve talks to it over
+  REST at `CN_BASE_URL` (default `http://127.0.0.1:28080`); when it's down, mode
+  4 renders "ContextNest offline" and the rest of the app is unaffected.
+- **TraceOtter** — the learning/GRPO layer. Its signal (rewards by lane, objective
+  domains) rides in mini-ork's `state.db`, so the **Learning** mode lights up as
+  soon as mini-ork has recorded traces — no extra service to run.
+
+> **In short:** you need **opencode** + a **mini-ork** checkout to get real work
+> and data; **ContextNest** is an add-on for the memory mode; **TraceOtter** data
+> comes for free with mini-ork.
 
 ## Installation
 
